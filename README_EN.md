@@ -2,7 +2,7 @@
 
 [中文](README.md) | **English**
 
-This is HookNext's release and feature-description repository in Xposed Modules Repo. Its complete user guide stays synchronized with the HookNext home repository. It does not contain the Android client source code. Feature descriptions follow the current released implementation and the in-app UI.
+This is HookNext's release and feature-description repository in Xposed Modules Repo. Its complete user guide stays synchronized with the HookNext home repository. It does not contain the Android client source code. Feature descriptions track the current HookNext implementation; when an installed version differs, refer to that release's notes and in-app UI.
 
 HookNext is a visual Xposed module manager and runtime analysis tool for Android. It lets users configure method, argument, return-value, and field hooks without writing an Xposed module, then inspect and manage the results from the Android app, a LAN web interface, or an MCP client.
 
@@ -15,6 +15,7 @@ HookNext is the fully upgraded successor to [SimpleHook](https://github.com/litt
 - [HookNext and SimpleHook](#hooknext-and-simplehook)
 - [Feature overview](#feature-overview)
 - [Requirements and three important concepts](#requirements-and-three-important-concepts)
+- [Installation and in-app updates](#installation-and-in-app-updates)
 - [First-time setup](#first-time-setup)
 - [Custom hook configuration tutorial](#custom-hook-configuration-tutorial)
 - [Extension configurations](#extension-configurations)
@@ -38,13 +39,13 @@ HookNext is the next-generation version of SimpleHook, not an unrelated tool. Bo
 | Record system | Custom and extension records are separated and support search, filters, marks, details, deletion, and export |
 | Extensions | Categorized controls cover algorithms, UI, security, network, WebView, clipboard, files, exits, signatures, and HotFix |
 | Remote management | An embedded Ktor server provides a Vue web interface and permission-tiered MCP service |
-| Data tools | Backup/restore, SimpleHook import, and Frida JavaScript export are built in |
+| Data tools | Complete backup/restore, HookNext config import and sharing, SimpleHook migration, and Frida JavaScript export are built in |
 
 Important migration boundaries:
 
 1. HookNext and SimpleHook use different internal configuration models. Do not copy their internal files manually.
 2. HookNext can recognize one or more SimpleHook custom configurations copied to the clipboard.
-3. Imported configuration groups are disabled by default, and detected duplicates are skipped.
+3. Imported configuration groups are disabled by default. Exact duplicates are unselected initially but can still be selected under a stronger warning.
 4. SimpleHook extension switches, app settings, and runtime state are not migrated as equivalent settings.
 5. Explicit value types, wildcards, and conditions must be reviewed rule by rule and tested in a controlled app.
 
@@ -60,7 +61,7 @@ Important migration boundaries:
 - Record arguments, return values, both, or static/instance fields.
 - Gate a rule with argument or return-value conditions.
 - Match an exact overload or use method and argument wildcards.
-- Produce primitive values, strings, random strings, JSON-created objects, or `null`.
+- Produce primitive values, strings, random strings, JSON-created objects, arrays or collections, or `null`.
 
 ### Analysis and management
 
@@ -68,9 +69,12 @@ Important migration boundaries:
 - Search records, group them by type or app, mark, delete, inspect, and export the current group/filter result.
 - Synchronize configurations and read records in Root, Shizuku, or Normal mode.
 - Back up configurations and settings manually or automatically and restore ZIP snapshots.
+- Import configs from the clipboard, files, Android shares, or HTTPS URLs, then resolve conflicts from a preview.
+- Select and share one or more HookNext custom configs.
 - Export selected custom configurations as Frida JavaScript.
 - Manage configurations, extensions, and records from the same device or a trusted LAN browser.
 - Expose HookNext tools to compatible clients through read-only, read/write, or full-access MCP tiers.
+- Check GitHub stable releases automatically or manually, then install an APK only after verification.
 
 ## Requirements and three important concepts
 
@@ -98,6 +102,16 @@ Work mode controls configuration files, record files, and selected app operation
 | Normal | No Root/Shizuku, or ordinary access is preferred | Allowed direct access on Android 10 and below; SAF directory access on Android 11+ | Follow the prompt to grant directories such as `Android/media`; system restrictions still apply |
 
 A hook rule is expected to have the same meaning in every work mode. The modes mainly change how HookNext synchronizes configuration to the target process, reads records, and performs helper operations such as launch or force-stop.
+
+## Installation and in-app updates
+
+For the initial installation, obtain the APK from the HookNext home [Releases](https://github.com/littleWhiteDuck/HookNextHome/releases) page. After installation, you can check manually under Settings → About. Automatic checks are enabled by default and run only when HookNext is opened. The last-check time is stored locally, limiting update requests to once every 24 hours. When a newer stable release is found, Settings and About display an update indicator.
+
+If a GitHub Release contains a verifiable APK, you can download it from GitHub or a third-party mirror such as `wget.la`, `cdn.gh-proxy.org`, or `fastgit.cc`, or open the Release page in a browser. A mirror receives the original download URL, so choose one according to your network conditions and trust requirements. Files returned by mirrors still go through the same verification.
+
+After download, HookNext checks the Release asset metadata, file size, official SHA-256, APK format, application package, signing certificate, and version code. It invokes the Android package installer only after every check passes. Android may first require permission to install unknown apps. A verified cached APK can be reused, while stale APKs and incomplete downloads are cleaned automatically.
+
+Automatic checks do not automatically download or silently install an update. If a Release has no verifiable APK, verification fails, or the installed app uses a different signing certificate, open the Release page and verify the source manually.
 
 ## First-time setup
 
@@ -282,10 +296,10 @@ HookNext uses explicit value types:
 | `CHAR` | One character |
 | `STRING` | Literal string; empty input means an empty string |
 | `RANDOM_STRING` | Charset, length, and every-call, stable-reuse, or timed-refresh strategy |
-| `JSON_DATA` | A target class name and JSON, constructed with the target ClassLoader and Gson |
+| `JSON_DATA` | A target class name plus object or array JSON, constructed with the target ClassLoader, reflected type information, and Gson |
 | `NULL` | `null`; only use it where the target type permits it |
 
-`JSON_DATA` is intended for structurally simple objects that Gson can create. For example:
+`JSON_DATA` accepts both object roots `{}` and array roots `[]`. For a structurally simple object that Gson can create, specify its target class directly:
 
 ```java
 public final class Profile {
@@ -298,11 +312,22 @@ public final class Profile {
 Mode: Replace return value
 Target: loadLocalProfile(java.lang.String)
 Value type: JSON_DATA
-JSON class: me.example.demo.Profile
+Target class: me.example.demo.Profile
 JSON: {"id":"local-001","name":"Test User"}
 ```
 
-Objects with custom deserialization, complex generics, system handles, Binder, Context, or special construction requirements may not be created correctly. A conversion failure produces an error record; disable the rule and use a more suitable test object.
+Return values, arguments, instance fields, and static fields can all use `JSON_DATA`. When a target member retains a concrete generic signature such as `List<Profile>`, HookNext reads its reflected `Type` and uses the element type to parse a non-empty collection:
+
+```text
+Target method declaration: java.util.List<me.example.demo.Profile>
+Value type: JSON_DATA
+Target class: java.util.ArrayList
+JSON: [{"id":"local-001","name":"Test User"}]
+```
+
+The configured class selects a compatible concrete implementation such as `ArrayList` or `LinkedList`, while the target signature supplies `Profile` and nested generic information. If only a raw type is available, a type variable is unresolved, or generic information cannot be read, parsing falls back to the configured raw class. For legacy compatibility, the default empty object `{}` is converted to `[]` only for recognized collection classes; non-empty JSON is never rewritten.
+
+Objects that require custom deserialization, system handles, Binder, Context, or special construction flows still may not be created correctly by Gson. A conversion failure produces an error record; disable the rule and verify the target type, generic signature, and JSON shape.
 
 ### Methods, constructors, and wildcards
 
@@ -385,7 +410,9 @@ Extensions provide predefined hooks for common framework and system APIs. Both t
 
 Extensions target common Android API paths. They cannot guarantee coverage of custom implementations, native code, reflection, or vendor modifications. Broader coverage increases both overhead and compatibility risk.
 
-HotFix is experimental and depends on Android version, ClassLoader behavior, compiler optimization, and target-app structure. HookNext copies a patch into the target app's private `code_cache`, validates it, marks it read-only, and only then attempts injection. Use it only in a recoverable test environment.
+To use HotFix, enable both the extension master switch and Enable hot fix for the target app, place `.dex` patches in the Dex path shown on that screen, then fully stop and restart the target app. Failures are always recorded. Enable Record normal results only when Applied and No Patch records are also useful.
+
+HotFix is experimental and depends on Android version, ClassLoader behavior, compiler optimization, and target-app structure. During staging, HookNext validates DEX magic, file counts, sizes, and source consistency while copying patches into the target app's private `code_cache`; it then marks them read-only, verifies permissions, and only then attempts injection. The cache also binds a patch to fingerprints of the target's current base and split APKs. If the target app changes while the patch source remains unchanged, loading is rejected until the patch is copied or replaced again to bind it explicitly to the new version. This prevents an old patch from being applied accidentally, but it does not prove that the patch is compatible with the new target.
 
 ## Viewing and managing records
 
@@ -442,7 +469,17 @@ After selecting `Documents/HookNext` under Settings → Backup and restore, you 
 - Trigger automatic backups after changes, using automatic, hourly, or daily granularity for the latest backup.
 - Select and restore a ZIP from the current directory.
 
-Restoring replaces the current custom configurations, extension configurations, and settings. Create a snapshot of the current state first and restore only trusted backups.
+A complete restore first shows a read-only preview, then replaces current custom configurations, extension configurations, and settings. It is not a merge: existing configs absent from the backup are removed. Create a snapshot of the current state first and restore only trusted backups.
+
+### Importing and sharing HookNext configs
+
+On Android, Home imports from the clipboard or an HTTPS URL, while text and files shared by other apps enter the same preview flow. Settings → Backup and restore can also open a JSON or config-exchange ZIP file directly. The web interface accepts pasted JSON or a selected JSON file and uses the same conflict rules. Before import, the preview shows format, app, rule count, installation status, and conflict type:
+
+- Exact duplicates are unselected by default. Select one manually under the stronger warning only when it should be imported anyway.
+- When a different config already targets the same package, explicitly choose Keep as new or Replace latest.
+- If the target app is not installed, the config is saved only in HookNext's database; no target directory, synchronized file, or scope request is created.
+
+Sharing packages selected custom configs as a config-exchange ZIP containing semantic config data only. It excludes database IDs, app settings, and temporary state. A complete-backup ZIP always follows the replacement restore flow above and cannot be merged as an ordinary config import.
 
 ### Migrating from SimpleHook
 
@@ -511,9 +548,13 @@ Conditions convert values to strings. `Greater` and `Less` are lexicographical r
 
 Break returns `null`. Primitive returns, constructors, and methods whose side effects are required may not tolerate it. Use a correctly typed return replacement and narrow argument conditions instead.
 
-### A JSON return object cannot be created
+### JSON data conversion fails
 
-Confirm that the class is loadable by the target process, JSON fields match the target class, and Gson can construct it. Complex generics, system objects, Context, Binder, and objects with special creation flows are usually poor candidates.
+Confirm that the target process can load the class, the JSON root and fields match the target structure, and the configured class is compatible with the return, argument, or field type. Concrete generic signatures are used to parse collection elements; raw types or unresolved type variables may produce generic values such as maps. System objects, Context, Binder, and objects with special creation flows are usually poor candidates.
+
+### HotFix reports Target app not bound or Target app changed
+
+Target app not bound usually means the patch came from an older cache and has not been bound to the current APK. Target app changed means the base or a split APK changed while the patch source did not. Verify that the patch still targets the installed app version, then copy or replace it again in the Dex path and restart the target. Do not bypass the fingerprint check to keep using an old cache.
 
 ### Records grow quickly or the app becomes slow
 
